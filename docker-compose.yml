@@ -1,0 +1,105 @@
+version: '3.9'
+
+services:
+
+  # ─────────────────────────────────────────
+  # BASE DE DONNÉES
+  # ─────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: scolaire_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${NOM_BASE_POSTGRES:-systeme_scolaire}
+      POSTGRES_USER: ${UTILISATEUR_POSTGRES:-admin}
+      POSTGRES_PASSWORD: ${MOT_DE_PASSE_POSTGRES}
+    ports:
+      - "5432:5432"
+    volumes:
+      - donnees_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${UTILISATEUR_POSTGRES:-admin} -d ${NOM_BASE_POSTGRES:-systeme_scolaire}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - reseau_scolaire
+
+  # ─────────────────────────────────────────
+  # CACHE ET SESSIONS
+  # ─────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: scolaire_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - donnees_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - reseau_scolaire
+
+  # ─────────────────────────────────────────
+  # BACKEND API
+  # ─────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: scolaire_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${PORT_BACKEND:-3000}:3000"
+    volumes:
+      - ./backend/src:/app/src        # rechargement automatique du code
+      - ./backend/prisma:/app/prisma
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - reseau_scolaire
+
+  # ─────────────────────────────────────────
+  # FRONTEND
+  # ─────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: scolaire_frontend
+    restart: unless-stopped
+    environment:
+      - VITE_URL_API=${URL_BACKEND:-http://localhost:3000}/api/v1
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src        # rechargement automatique du code
+    depends_on:
+      - backend
+    networks:
+      - reseau_scolaire
+
+# ─────────────────────────────────────────
+# VOLUMES PERSISTANTS
+# ─────────────────────────────────────────
+volumes:
+  donnees_postgres:
+    driver: local
+  donnees_redis:
+    driver: local
+
+# ─────────────────────────────────────────
+# RÉSEAU INTERNE
+# ─────────────────────────────────────────
+networks:
+  reseau_scolaire:
+    driver: bridge

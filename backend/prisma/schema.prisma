@@ -1,0 +1,228 @@
+// ─────────────────────────────────────────────────────────
+// SCHÉMA PRISMA — SYSTÈME DE GESTION SCOLAIRE HAÏTI
+// Schéma public uniquement (niveau global du système)
+// Les schémas des écoles sont gérés via des migrations SQL
+// ─────────────────────────────────────────────────────────
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("BASE_URL_POSTGRES")
+  schemas  = ["public"]
+}
+
+// ─────────────────────────────────────────────────────────
+// ÉNUMÉRATIONS
+// ─────────────────────────────────────────────────────────
+
+enum RoleUtilisateur {
+  SUPER_ADMIN
+  ADMIN_ECOLE
+  PROFESSEUR
+  PARENT
+
+  @@schema("public")
+}
+
+enum StatutEcole {
+  EN_ATTENTE
+  ACTIVE
+  SUSPENDUE
+  DESACTIVEE
+
+  @@schema("public")
+}
+
+enum StatutAffectation {
+  ACTIVE
+  INACTIVE
+
+  @@schema("public")
+}
+
+enum StatutMigration {
+  SUCCES
+  ECHEC
+
+  @@schema("public")
+}
+
+// ─────────────────────────────────────────────────────────
+// UTILISATEURS (tous les acteurs du système)
+// ─────────────────────────────────────────────────────────
+
+model Utilisateur {
+  id                  String            @id @default(uuid())
+  email               String            @unique
+  mot_de_passe        String
+  role                RoleUtilisateur
+  nom                 String
+  prenom              String
+  telephone           String?
+  actif               Boolean           @default(true)
+  derniere_connexion  DateTime?
+  cree_le             DateTime          @default(now())
+  modifie_le          DateTime          @updatedAt
+
+  // Relations
+  professeur          Professeur?
+  parent              Parent?
+  tokens_rafraich     TokenRafraichissement[]
+
+  @@schema("public")
+  @@map("utilisateurs")
+}
+
+// ─────────────────────────────────────────────────────────
+// TOKENS DE RAFRAÎCHISSEMENT
+// ─────────────────────────────────────────────────────────
+
+model TokenRafraichissement {
+  id              String        @id @default(uuid())
+  token           String        @unique
+  utilisateur_id  String
+  expire_le       DateTime
+  revoque         Boolean       @default(false)
+  cree_le         DateTime      @default(now())
+
+  utilisateur     Utilisateur   @relation(fields: [utilisateur_id], references: [id], onDelete: Cascade)
+
+  @@schema("public")
+  @@map("tokens_rafraichissement")
+}
+
+// ─────────────────────────────────────────────────────────
+// ÉCOLES
+// ─────────────────────────────────────────────────────────
+
+model Ecole {
+  id                String        @id @default(uuid())
+  nom               String
+  slug              String        @unique   // ex: "saint-pierre" pour l'URL
+  schema_nom        String        @unique   // ex: "ecole_saint_pierre"
+  adresse           String?
+  ville             String?
+  telephone         String?
+  email             String?
+  directeur_nom     String?
+  logo_url          String?
+  statut            StatutEcole   @default(EN_ATTENTE)
+  annee_scolaire    String?       // ex: "2024-2025"
+  cree_le           DateTime      @default(now())
+  modifie_le        DateTime      @updatedAt
+
+  // Relations
+  affectations_globales   AffectationGlobale[]
+  historique_migrations   HistoriqueMigration[]
+  abonnement              Abonnement?
+
+  @@schema("public")
+  @@map("ecoles")
+}
+
+// ─────────────────────────────────────────────────────────
+// PROFESSEURS (profil global — indépendant de toute école)
+// ─────────────────────────────────────────────────────────
+
+model Professeur {
+  id              String      @id @default(uuid())
+  utilisateur_id  String      @unique
+  specialite      String?
+  diplome         String?
+  cree_le         DateTime    @default(now())
+  modifie_le      DateTime    @updatedAt
+
+  // Relations
+  utilisateur     Utilisateur       @relation(fields: [utilisateur_id], references: [id], onDelete: Cascade)
+  affectations    AffectationGlobale[]
+
+  @@schema("public")
+  @@map("professeurs")
+}
+
+// ─────────────────────────────────────────────────────────
+// PARENTS (profil global)
+// ─────────────────────────────────────────────────────────
+
+model Parent {
+  id              String      @id @default(uuid())
+  utilisateur_id  String      @unique
+  cree_le         DateTime    @default(now())
+  modifie_le      DateTime    @updatedAt
+
+  // Relations
+  utilisateur     Utilisateur       @relation(fields: [utilisateur_id], references: [id], onDelete: Cascade)
+
+  @@schema("public")
+  @@map("parents")
+}
+
+// ─────────────────────────────────────────────────────────
+// AFFECTATIONS GLOBALES
+// Pont entre le professeur global et l'école isolée
+// ─────────────────────────────────────────────────────────
+
+model AffectationGlobale {
+  id                String              @id @default(uuid())
+  professeur_id     String
+  ecole_id          String
+  statut            StatutAffectation   @default(ACTIVE)
+  date_affectation  DateTime            @default(now())
+  cree_le           DateTime            @default(now())
+
+  // Relations
+  professeur        Professeur  @relation(fields: [professeur_id], references: [id], onDelete: Cascade)
+  ecole             Ecole       @relation(fields: [ecole_id], references: [id], onDelete: Cascade)
+
+  // Un professeur ne peut être affilié qu'une fois à la même école
+  @@unique([professeur_id, ecole_id])
+  @@schema("public")
+  @@map("affectations_globales")
+}
+
+// ─────────────────────────────────────────────────────────
+// ABONNEMENTS (modèle SaaS)
+// ─────────────────────────────────────────────────────────
+
+model Abonnement {
+  id              String      @id @default(uuid())
+  ecole_id        String      @unique
+  plan            String      @default("BASIQUE")   // BASIQUE / STANDARD / PREMIUM
+  date_debut      DateTime
+  date_fin        DateTime?
+  actif           Boolean     @default(true)
+  montant         Float?
+  devise          String      @default("HTG")       // Gourdes haïtiennes
+  cree_le         DateTime    @default(now())
+  modifie_le      DateTime    @updatedAt
+
+  ecole           Ecole       @relation(fields: [ecole_id], references: [id], onDelete: Cascade)
+
+  @@schema("public")
+  @@map("abonnements")
+}
+
+// ─────────────────────────────────────────────────────────
+// HISTORIQUE DES MIGRATIONS
+// Suivi des migrations appliquées par école
+// ─────────────────────────────────────────────────────────
+
+model HistoriqueMigration {
+  id              String            @id @default(uuid())
+  ecole_id        String
+  nom_migration   String            // ex: "001_creation_classes"
+  appliquee_le    DateTime          @default(now())
+  statut          StatutMigration
+  message_erreur  String?
+
+  ecole           Ecole   @relation(fields: [ecole_id], references: [id], onDelete: Cascade)
+
+  // Une migration ne s'applique qu'une fois par école
+  @@unique([ecole_id, nom_migration])
+  @@schema("public")
+  @@map("historique_migrations")
+}
