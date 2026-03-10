@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAuth } from '../hooks/utiliserAuthentification';
+import { ecolesService } from '../services/api';
 
 export default function ConnexionPage() {
   const { slug } = useParams<{ slug: string }>();
@@ -12,12 +13,12 @@ export default function ConnexionPage() {
   const [ecole, setEcole] = useState<{ id: string; nom: string } | null>(null);
 
   // Charger les infos de l'école si slug présent dans l'URL
+  // Utilise le service axios (proxy Vite) au lieu de fetch avec URL en dur
   useEffect(() => {
     if (slug) {
-      fetch(`http://localhost:3000/api/v1/ecoles/connexion/${slug}`)
-        .then(r => r.json())
-        .then(data => {
-          if (data.id) setEcole(data);
+      ecolesService.obtenirParSlug(slug)
+        .then((r) => {
+          if (r.data?.id) setEcole(r.data);
           else setMessage('École introuvable');
         })
         .catch(() => setMessage('Erreur de connexion au serveur'));
@@ -31,12 +32,14 @@ export default function ConnexionPage() {
     }
     setMessage('Connexion en cours...');
     try {
-      const resultat = await connexion(email, motDePasse, ecole?.id);
+      const resultat = await connexion(email, motDePasse, ecole?.id) as any;
       const role = resultat?.utilisateur?.role;
       if (role === 'SUPER_ADMIN') window.location.href = '/super-admin';
       else if (role === 'ADMIN_ECOLE') window.location.href = '/admin';
+      else if (role === 'SECRETAIRE') window.location.href = '/admin';
       else if (role === 'PROFESSEUR') window.location.href = '/professeur';
       else if (role === 'PARENT') window.location.href = '/parent';
+      else if (role === 'ELEVE') window.location.href = '/eleve';
       else setMessage('Rôle non reconnu : ' + role);
     } catch (err: any) {
       setMessage(err.response?.data?.message || 'Identifiants incorrects');
@@ -64,7 +67,7 @@ export default function ConnexionPage() {
             <input
               type="email"
               value={email}
-              onChange={e => setEmail(e.target.value)}
+              onChange={(e) => setEmail(e.target.value)}
               className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="votre@email.com"
             />
@@ -75,7 +78,7 @@ export default function ConnexionPage() {
             <input
               type="password"
               value={motDePasse}
-              onChange={e => setMotDePasse(e.target.value)}
+              onChange={(e) => setMotDePasse(e.target.value)}
               className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="••••••••"
             />

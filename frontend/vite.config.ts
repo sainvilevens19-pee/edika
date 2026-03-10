@@ -10,5 +10,12 @@ export default defineConfig({
       usePolling: true,
       interval: 1000,
     },
+    // Proxy /api vers le backend — même origine → cookies SameSite=Strict fonctionnent
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+    },
   },
 });

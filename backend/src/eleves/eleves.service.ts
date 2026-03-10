@@ -1,10 +1,9 @@
 import {
   Injectable,
   NotFoundException,
-  ConflictException,
-  BadRequestException,
 } from '@nestjs/common';
 import { Pool } from 'pg';
+import { PrismaService } from '../commun/prisma/prisma.service';
 
 export interface CreerEleveDto {
   nom: string;
@@ -24,6 +23,8 @@ export interface CreerEleveDto {
 @Injectable()
 export class ElevesService {
 
+  constructor(private readonly prisma: PrismaService) {}
+
   // ─────────────────────────────────────────
   // INSCRIRE UN ÉLÈVE
   // ─────────────────────────────────────────
@@ -33,7 +34,7 @@ export class ElevesService {
     try {
       await client.query(`SET search_path TO "${schemaNom}"`);
 
-      // Générer un matricule automatiquement
+      // Générer un matricule automatiquement : YYYY-NNN
       const annee = new Date().getFullYear();
       const compteurRes = await client.query(
         `SELECT COUNT(*) as total FROM eleves WHERE annee_scolaire = $1`,
@@ -92,7 +93,7 @@ export class ElevesService {
         LEFT JOIN classes c ON e.classe_id = c.id
         WHERE 1=1
       `;
-      const params: any[] = [];
+      const params: unknown[] = [];
       let index = 1;
 
       if (filtres.classe_id) {
@@ -108,7 +109,7 @@ export class ElevesService {
         params.push(filtres.statut);
       }
 
-      requete += ' ORDER BY e.nom, e.prenom';
+      requete += ' ORDER BY e.nom, e.prenom LIMIT 500';
 
       const resultat = await client.query(requete, params);
       return resultat.rows;
@@ -119,7 +120,7 @@ export class ElevesService {
   }
 
   // ─────────────────────────────────────────
-  // OBTENIR UN ÉLÈVE PAR ID
+  // OBTENIR UN ÉLÈVE PAR ID (admin/prof)
   // ─────────────────────────────────────────
   async obtenirEleve(pool: Pool, schemaNom: string, eleveId: string) {
     const client = await pool.connect();
@@ -143,6 +144,79 @@ export class ElevesService {
 
     } finally {
       client.release();
+    }
+  }
+
+  // ─────────────────────────────────────────
+  // VÉRIFIER LA LIAISON PARENT-ÉLÈVE
+  // Utilisé avant tout accès d'un PARENT aux données d'un élève.
+  // Retourne true si une liaison valide existe en schéma public.
+  // ─────────────────────────────────────────
+  async verifierLiaisonParent(utilisateurId: string, eleveId: string): Promise<boolean> {
+    // Trouver le profil Parent à partir de l'utilisateur
+    const parent = await this.prisma.parent.findUnique({
+      where: { utilisateur_id: utilisateurId },
+    });
+
+    if (!parent) return false;
+
+    const liaison = await this.prisma.liaisonParentEnfant.findFirst({
+      where: {
+        parent_id: parent.id,
+        eleve_id: eleveId,
+        valide: true,
+      },
+    });
+
+    return liaison !== null;
+  }
+
+  // ─────────────────────────────────────────
+  // OBTENIR UN ÉLÈVE (accès PARENT)
+  // Récupère le schéma depuis la liaison validée, puis
+  // interroge le schéma tenant approprié.
+  // ─────────────────────────────────────────
+  async obtenirEleveParent(utilisateurId: string, eleveId: string) {
+    const parent = await this.prisma.parent.findUnique({
+      where: { utilisateur_id: utilisateurId },
+    });
+
+    if (!parent) throw new NotFoundException('Profil parent introuvable');
+
+    const liaison = await this.prisma.liaisonParentEnfant.findFirst({
+      where: {
+        parent_id: parent.id,
+        eleve_id: eleveId,
+        valide: true,
+      },
+    });
+
+    if (!liaison) throw new NotFoundException('Liaison parent-enfant introuvable');
+
+    // Créer un pool temporaire pour interroger le schéma tenant de l'école
+    const pool = new Pool({ connectionString: process.env.BASE_URL_POSTGRES });
+    const client = await pool.connect();
+
+    try {
+      await client.query(`SET search_path TO "${liaison.schema_nom}"`);
+
+      const resultat = await client.query(
+        `SELECT e.*, c.nom as classe_nom, c.niveau as classe_niveau
+         FROM eleves e
+         LEFT JOIN classes c ON e.classe_id = c.id
+         WHERE e.id = $1`,
+        [eleveId],
+      );
+
+      if (resultat.rows.length === 0) {
+        throw new NotFoundException('Élève introuvable dans ce schéma');
+      }
+
+      return resultat.rows[0];
+
+    } finally {
+      client.release();
+      await pool.end();
     }
   }
 
