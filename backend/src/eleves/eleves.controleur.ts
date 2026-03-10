@@ -29,8 +29,9 @@ export class ElevesControleur {
     return req.utilisateur?.schema_courant as string;
   }
 
-  // POST /api/v1/eleves
-  // ADMIN_ECOLE et SECRETAIRE uniquement
+  // ─────────────────────────────────────────
+  // POST /eleves
+  // ─────────────────────────────────────────
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @Roles('ADMIN_ECOLE', 'SECRETAIRE')
@@ -42,9 +43,9 @@ export class ElevesControleur {
     );
   }
 
-  // GET /api/v1/eleves
-  // ADMIN_ECOLE, SECRETAIRE, PROFESSEUR — chacun voit les élèves de son école
-  // Note : le filtrage par classe (professeur) sera ajouté en Sprint 1
+  // ─────────────────────────────────────────
+  // GET /eleves
+  // ─────────────────────────────────────────
   @Get()
   @Roles('ADMIN_ECOLE', 'SECRETAIRE', 'PROFESSEUR')
   async listerEleves(
@@ -60,9 +61,10 @@ export class ElevesControleur {
     );
   }
 
-  // GET /api/v1/eleves/:id
-  // ADMIN_ECOLE, SECRETAIRE, PROFESSEUR, PARENT
-  // Pour PARENT : vérifie qu'une liaison valide existe avant d'accéder aux données
+  // ─────────────────────────────────────────
+  // GET /eleves/:id
+  // PARENT : vérifie liaison avant accès
+  // ─────────────────────────────────────────
   @Get(':id')
   @Roles('ADMIN_ECOLE', 'SECRETAIRE', 'PROFESSEUR', 'PARENT')
   async obtenirEleve(@Req() req: Request, @Param('id') id: string) {
@@ -80,7 +82,6 @@ export class ElevesControleur {
           "Contactez l'administration de l'école pour obtenir un code dossier.",
         );
       }
-      // Récupérer le schéma depuis la liaison (le parent n'a pas de schema_courant dans son JWT)
       return this.elevesService.obtenirEleveParent(utilisateur.id, id);
     }
 
@@ -91,8 +92,9 @@ export class ElevesControleur {
     );
   }
 
-  // PATCH /api/v1/eleves/:id
-  // ADMIN_ECOLE et SECRETAIRE uniquement — les professeurs ne peuvent pas modifier un élève
+  // ─────────────────────────────────────────
+  // PATCH /eleves/:id
+  // ─────────────────────────────────────────
   @Patch(':id')
   @Roles('ADMIN_ECOLE', 'SECRETAIRE')
   async modifierEleve(
@@ -105,6 +107,36 @@ export class ElevesControleur {
       this.obtenirSchema(req),
       id,
       dto,
+    );
+  }
+
+  // ─────────────────────────────────────────
+  // PATCH /eleves/:id/valider
+  // EN_ATTENTE → VALIDE (validé par ADMIN_ECOLE)
+  // ─────────────────────────────────────────
+  @Patch(':id/valider')
+  @Roles('ADMIN_ECOLE')
+  async validerEleve(@Req() req: Request, @Param('id') id: string) {
+    return this.elevesService.validerEleve(
+      this.obtenirPool(req),
+      this.obtenirSchema(req),
+      id,
+    );
+  }
+
+  // ─────────────────────────────────────────
+  // PATCH /eleves/:id/activer
+  // VALIDE → ACTIF + création compte Utilisateur (par ADMIN_ECOLE)
+  // ─────────────────────────────────────────
+  @Patch(':id/activer')
+  @Roles('ADMIN_ECOLE')
+  async activerEleve(@Req() req: Request, @Param('id') id: string) {
+    const ecoleId = (req as any).utilisateur?.ecole_courant_id;
+    return this.elevesService.activerEleve(
+      this.obtenirPool(req),
+      this.obtenirSchema(req),
+      id,
+      ecoleId,
     );
   }
 }

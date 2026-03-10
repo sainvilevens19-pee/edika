@@ -1,8 +1,10 @@
 import {
   Injectable,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import { Pool } from 'pg';
+import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../commun/prisma/prisma.service';
 
 export interface CreerEleveDto {
@@ -26,7 +28,7 @@ export class ElevesService {
   constructor(private readonly prisma: PrismaService) {}
 
   // ─────────────────────────────────────────
-  // INSCRIRE UN ÉLÈVE
+  // INSCRIRE UN ÉLÈVE (statut = EN_ATTENTE)
   // ─────────────────────────────────────────
   async inscrireEleve(pool: Pool, schemaNom: string, dto: CreerEleveDto) {
     const client = await pool.connect();
@@ -47,8 +49,8 @@ export class ElevesService {
         `INSERT INTO eleves (
           matricule, nom, prenom, sexe, date_naissance, lieu_naissance,
           adresse, telephone_parent, nom_parent, email_parent,
-          parent_id, classe_id, annee_scolaire
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+          parent_id, classe_id, annee_scolaire, statut
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'EN_ATTENTE')
         RETURNING *`,
         [
           matricule,
@@ -141,6 +143,135 @@ export class ElevesService {
       }
 
       return resultat.rows[0];
+
+    } finally {
+      client.release();
+    }
+  }
+
+  // ─────────────────────────────────────────
+  // VALIDER UN ÉLÈVE (EN_ATTENTE → VALIDE)
+  // Effectué par l'ADMIN_ECOLE (censeur)
+  // ─────────────────────────────────────────
+  async validerEleve(pool: Pool, schemaNom: string, eleveId: string) {
+    const client = await pool.connect();
+
+    try {
+      await client.query(`SET search_path TO "${schemaNom}"`);
+
+      // Vérifier le statut actuel
+      const eleveRes = await client.query(
+        `SELECT id, statut, nom, prenom FROM eleves WHERE id = $1`,
+        [eleveId],
+      );
+
+      if (eleveRes.rows.length === 0) {
+        throw new NotFoundException('Élève introuvable');
+      }
+
+      const eleve = eleveRes.rows[0];
+
+      if (eleve.statut !== 'EN_ATTENTE') {
+        throw new BadRequestException(
+          `Impossible de valider : le statut actuel est "${eleve.statut}" (attendu : EN_ATTENTE)`,
+        );
+      }
+
+      const resultat = await client.query(
+        `UPDATE eleves SET statut = 'VALIDE', modifie_le = NOW()
+         WHERE id = $1 RETURNING *`,
+        [eleveId],
+      );
+
+      return resultat.rows[0];
+
+    } finally {
+      client.release();
+    }
+  }
+
+  // ─────────────────────────────────────────
+  // ACTIVER UN ÉLÈVE (VALIDE → ACTIF)
+  // Crée le compte Utilisateur et ElevePublic
+  // ─────────────────────────────────────────
+  async activerEleve(
+    pool: Pool,
+    schemaNom: string,
+    eleveId: string,
+    ecoleId: string,
+  ) {
+    const client = await pool.connect();
+
+    try {
+      await client.query(`SET search_path TO "${schemaNom}"`);
+
+      // Vérifier le statut actuel
+      const eleveRes = await client.query(
+        `SELECT id, statut, nom, prenom, matricule FROM eleves WHERE id = $1`,
+        [eleveId],
+      );
+
+      if (eleveRes.rows.length === 0) {
+        throw new NotFoundException('Élève introuvable');
+      }
+
+      const eleve = eleveRes.rows[0];
+
+      if (eleve.statut !== 'VALIDE') {
+        throw new BadRequestException(
+          `Impossible d'activer : le statut actuel est "${eleve.statut}" (attendu : VALIDE)`,
+        );
+      }
+
+      // Vérifier si un compte Utilisateur existe déjà pour cet élève
+      if (eleve.utilisateur_id) {
+        throw new BadRequestException("Un compte utilisateur est déjà créé pour cet élève");
+      }
+
+      // Créer un email auto et un mot de passe initial (= le matricule)
+      const emailAuto = `eleve.${eleve.matricule.toLowerCase().replace('-', '.')}@edika.edu.ht`;
+      const mdpInitial = eleve.matricule;  // ex: "2024-001"
+      const mdpHache = await bcrypt.hash(mdpInitial, 10);
+
+      // Créer Utilisateur + ElevePublic dans le schéma public
+      const { utilisateurId } = await this.prisma.$transaction(async (tx) => {
+        const utilisateur = await tx.utilisateur.create({
+          data: {
+            nom: eleve.nom,
+            prenom: eleve.prenom,
+            email: emailAuto,
+            mot_de_passe: mdpHache,
+            role: 'ELEVE',
+          },
+        });
+
+        await tx.elevePublic.create({
+          data: {
+            utilisateur_id: utilisateur.id,
+            ecole_id: ecoleId,
+            schema_nom: schemaNom,
+            eleve_id: eleveId,
+          },
+        });
+
+        return { utilisateurId: utilisateur.id };
+      });
+
+      // Mettre à jour le statut dans le tenant
+      const resultat = await client.query(
+        `UPDATE eleves SET statut = 'ACTIF', utilisateur_id = $2, modifie_le = NOW()
+         WHERE id = $1 RETURNING *`,
+        [eleveId, utilisateurId],
+      );
+
+      return {
+        eleve: resultat.rows[0],
+        credentials: {
+          email: emailAuto,
+          mot_de_passe_initial: mdpInitial,
+          message: 'Ces identifiants doivent être remis à l\'élève et changés dès la première connexion',
+        },
+      };
 
     } finally {
       client.release();

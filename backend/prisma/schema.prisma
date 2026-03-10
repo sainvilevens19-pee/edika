@@ -70,9 +70,14 @@ model Utilisateur {
   cree_le             DateTime          @default(now())
   modifie_le          DateTime          @updatedAt
 
+  // École d'appartenance pour le rôle SECRETAIRE
+  // (ADMIN_ECOLE utilise ecoles.admin_utilisateur_id, PROFESSEUR utilise AffectationGlobale)
+  ecole_id            String?
+
   // Relations
   professeur          Professeur?
   parent              Parent?
+  eleve_public        ElevePublic?
   tokens_rafraich     TokenRafraichissement[]
   ecole_admin         Ecole?            @relation("EcoleAdmin")
   journal_actions     JournalAction[]
@@ -132,6 +137,7 @@ model Ecole {
   historique_migrations     HistoriqueMigration[]
   abonnement                Abonnement?
   liaisons_parent_enfant    LiaisonParentEnfant[]
+  eleves_public             ElevePublic[]
 
   @@schema("public")
   @@map("ecoles")
@@ -222,6 +228,27 @@ model LiaisonParentEnfant {
   @@unique([parent_id, ecole_id, eleve_id])
   @@schema("public")
   @@map("liaisons_parent_enfant")
+}
+
+// ─────────────────────────────────────────────────────────
+// ÉLÈVES PUBLICS (liaison utilisateur ↔ tenant)
+// Permet la connexion d'un élève avec son compte
+// et le retrouver dans le bon schéma tenant
+// ─────────────────────────────────────────────────────────
+
+model ElevePublic {
+  id             String      @id @default(uuid())
+  utilisateur_id String      @unique
+  ecole_id       String
+  schema_nom     String      // schéma tenant de l'école (ex: "ecole_saint_pierre")
+  eleve_id       String      // UUID de l'élève dans le schéma tenant
+  cree_le        DateTime    @default(now())
+
+  utilisateur    Utilisateur @relation(fields: [utilisateur_id], references: [id], onDelete: Cascade)
+  ecole          Ecole       @relation(fields: [ecole_id], references: [id], onDelete: Cascade)
+
+  @@schema("public")
+  @@map("eleves_public")
 }
 
 // ─────────────────────────────────────────────────────────

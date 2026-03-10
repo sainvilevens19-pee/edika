@@ -142,6 +142,30 @@ export class AuthService {
       return resultat;
     }
 
+    // ── SECRETAIRE ─────────────────────────────────────────────────────────────
+    if (utilisateur.role === 'SECRETAIRE') {
+      if (!utilisateur.ecole_id) {
+        throw new UnauthorizedException('Aucune école associée à ce compte secrétaire');
+      }
+      const ecole = await this.prisma.ecole.findFirst({
+        where: { id: utilisateur.ecole_id, statut: 'ACTIVE' },
+      });
+      if (!ecole) {
+        throw new UnauthorizedException("L'école associée est inactive ou introuvable");
+      }
+      const resultat = await this.genererTokens(utilisateur, ecole.id, ecole.schema_nom);
+      await this.journal.journaliser({
+        utilisateur_id: utilisateur.id,
+        role: utilisateur.role,
+        action: 'CONNEXION_SUCCES',
+        entite: 'ecole',
+        entite_id: ecole.id,
+        ip_adresse: ipAdresse,
+        user_agent: userAgent,
+      });
+      return resultat;
+    }
+
     // ── PARENT ─────────────────────────────────────────────────────────────────
     if (utilisateur.role === 'PARENT') {
       const resultat = await this.genererTokens(utilisateur, null, null);
@@ -149,6 +173,27 @@ export class AuthService {
         utilisateur_id: utilisateur.id,
         role: utilisateur.role,
         action: 'CONNEXION_SUCCES',
+        ip_adresse: ipAdresse,
+        user_agent: userAgent,
+      });
+      return resultat;
+    }
+
+    // ── ELEVE ──────────────────────────────────────────────────────────────────
+    if (utilisateur.role === 'ELEVE') {
+      const elevePublic = await this.prisma.elevePublic.findUnique({
+        where: { utilisateur_id: utilisateur.id },
+      });
+      if (!elevePublic) {
+        throw new UnauthorizedException('Compte élève non configuré — contactez votre école');
+      }
+      const resultat = await this.genererTokens(utilisateur, elevePublic.ecole_id, elevePublic.schema_nom);
+      await this.journal.journaliser({
+        utilisateur_id: utilisateur.id,
+        role: utilisateur.role,
+        action: 'CONNEXION_SUCCES',
+        entite: 'ecole',
+        entite_id: elevePublic.ecole_id,
         ip_adresse: ipAdresse,
         user_agent: userAgent,
       });
