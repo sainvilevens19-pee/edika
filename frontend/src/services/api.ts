@@ -2,58 +2,61 @@ import axios from 'axios';
 
 // ─────────────────────────────────────────
 // Configuration Axios
+// URL relative /api/v1 — routée par le proxy Vite en dev,
+// et par le reverse-proxy (nginx/caddy) en production.
+// withCredentials = true → les cookies httpOnly sont envoyés automatiquement.
+// Plus besoin de gérer les tokens dans le code : le navigateur le fait.
 // ─────────────────────────────────────────
 const api = axios.create({
-  baseURL: import.meta.env.VITE_URL_API || 'http://localhost:3000/api/v1',
+  baseURL: '/api/v1',
+  withCredentials: true,  // Envoi automatique des cookies httpOnly (access_token, refresh_token)
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// Injecter le token JWT dans chaque requête
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
+// ─────────────────────────────────────────
+// Intercepteur de réponse — rafraîchissement automatique du token
+// Sur 401 : l'access_token en cookie est expiré.
+// Le refresh_token (cookie httpOnly) est envoyé automatiquement à /auth/rafraichir.
+// Le backend re-set les deux cookies et on relance la requête originale.
+// ─────────────────────────────────────────
+let enCoursDeRafraichissement = false;
 
-// Gérer l'expiration du token — rafraîchir automatiquement
 api.interceptors.response.use(
   (response) => response,
   async (erreur) => {
     const requeteOriginale = erreur.config;
 
-    // Si 401 et pas déjà en train de rafraîchir
     if (erreur.response?.status === 401 && !requeteOriginale._rafraichissement) {
       requeteOriginale._rafraichissement = true;
 
-      const tokenRafraich = localStorage.getItem('token_rafraichissement');
-      if (!tokenRafraich) {
-        // Pas de token de rafraîchissement → déconnexion
-        localStorage.clear();
-        window.location.href = '/';
+      if (enCoursDeRafraichissement) {
+        localStorage.removeItem('utilisateur');
+        localStorage.removeItem('ecole_courante');
+        window.location.href = '/connexion';
         return Promise.reject(erreur);
       }
 
+      enCoursDeRafraichissement = true;
+
       try {
-        const reponse = await api.post('/auth/rafraichir', {
-          token_rafraichissement: tokenRafraich,
-        });
+        // Le refresh token est dans le cookie httpOnly → pas de body nécessaire
+        await api.post('/auth/rafraichir');
 
-        const { access_token, token_rafraichissement } = reponse.data;
-        localStorage.setItem('access_token', access_token);
-        localStorage.setItem('token_rafraichissement', token_rafraichissement);
-
-        // Relancer la requête originale avec le nouveau token
-        requeteOriginale.headers.Authorization = `Bearer ${access_token}`;
+        // Les nouveaux cookies sont automatiquement set par le backend.
+        // Relancer la requête originale (les nouveaux cookies seront envoyés).
         return api(requeteOriginale);
 
       } catch {
-        localStorage.clear();
-        window.location.href = '/';
+        // Échec du rafraîchissement → déconnexion complète
+        localStorage.removeItem('utilisateur');
+        localStorage.removeItem('ecole_courante');
+        window.location.href = '/connexion';
         return Promise.reject(erreur);
+
+      } finally {
+        enCoursDeRafraichissement = false;
       }
     }
 
@@ -71,10 +74,11 @@ export const authService = {
   changerEcole: (ecoleId: string) =>
     api.post('/auth/changer-ecole', { ecole_id: ecoleId }),
 
-  deconnexion: () => {
-    const token = localStorage.getItem('token_rafraichissement');
-    return api.post('/auth/deconnexion', { token_rafraichissement: token });
-  },
+  rafraichir: () =>
+    api.post('/auth/rafraichir'),
+
+  deconnexion: () =>
+    api.post('/auth/deconnexion'),
 };
 
 // ─────────────────────────────────────────
@@ -87,7 +91,7 @@ export const ecolesService = {
   verifierSlug: (slug: string) =>
     api.get(`/ecoles/verifier-slug?slug=${slug}`),
 
-  inscrireEcole: (donnees: any) =>
+  inscrireEcole: (donnees: Record<string, unknown>) =>
     api.post('/ecoles/inscription', donnees),
 
   listerEcoles: () =>
@@ -104,10 +108,10 @@ export const elevesService = {
   obtenir: (id: string) =>
     api.get(`/eleves/${id}`),
 
-  inscrire: (donnees: any) =>
+  inscrire: (donnees: Record<string, unknown>) =>
     api.post('/eleves', donnees),
 
-  modifier: (id: string, donnees: any) =>
+  modifier: (id: string, donnees: Record<string, unknown>) =>
     api.patch(`/eleves/${id}`, donnees),
 };
 
@@ -116,8 +120,8 @@ export const elevesService = {
 // ─────────────────────────────────────────
 export const classesService = {
   lister: () => api.get('/classes'),
-  creer: (donnees: any) => api.post('/classes', donnees),
-  modifier: (id: string, donnees: any) => api.patch(`/classes/${id}`, donnees),
+  creer: (donnees: Record<string, unknown>) => api.post('/classes', donnees),
+  modifier: (id: string, donnees: Record<string, unknown>) => api.patch(`/classes/${id}`, donnees),
 };
 
 // ─────────────────────────────────────────
@@ -125,8 +129,8 @@ export const classesService = {
 // ─────────────────────────────────────────
 export const matieresService = {
   lister: () => api.get('/matieres'),
-  creer: (donnees: any) => api.post('/matieres', donnees),
-  modifier: (id: string, donnees: any) => api.patch(`/matieres/${id}`, donnees),
+  creer: (donnees: Record<string, unknown>) => api.post('/matieres', donnees),
+  modifier: (id: string, donnees: Record<string, unknown>) => api.patch(`/matieres/${id}`, donnees),
 };
 
 // ─────────────────────────────────────────
@@ -134,7 +138,7 @@ export const matieresService = {
 // ─────────────────────────────────────────
 export const affectationsService = {
   lister: () => api.get('/affectations'),
-  creer: (donnees: any) => api.post('/affectations', donnees),
+  creer: (donnees: Record<string, unknown>) => api.post('/affectations', donnees),
   supprimer: (id: string) => api.delete(`/affectations/${id}`),
 };
 

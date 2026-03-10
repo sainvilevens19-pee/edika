@@ -22,8 +22,10 @@ datasource db {
 enum RoleUtilisateur {
   SUPER_ADMIN
   ADMIN_ECOLE
+  SECRETAIRE
   PROFESSEUR
   PARENT
+  ELEVE
 
   @@schema("public")
 }
@@ -72,6 +74,8 @@ model Utilisateur {
   professeur          Professeur?
   parent              Parent?
   tokens_rafraich     TokenRafraichissement[]
+  ecole_admin         Ecole?            @relation("EcoleAdmin")
+  journal_actions     JournalAction[]
 
   @@schema("public")
   @@map("utilisateurs")
@@ -89,6 +93,10 @@ model TokenRafraichissement {
   revoque         Boolean       @default(false)
   cree_le         DateTime      @default(now())
 
+  // Contexte école pour restaurer le bon schéma tenant au refresh (fix B2)
+  ecole_id        String?
+  schema_nom      String?
+
   utilisateur     Utilisateur   @relation(fields: [utilisateur_id], references: [id], onDelete: Cascade)
 
   @@schema("public")
@@ -100,25 +108,30 @@ model TokenRafraichissement {
 // ─────────────────────────────────────────────────────────
 
 model Ecole {
-  id                String        @id @default(uuid())
-  nom               String
-  slug              String        @unique   // ex: "saint-pierre" pour l'URL
-  schema_nom        String        @unique   // ex: "ecole_saint_pierre"
-  adresse           String?
-  ville             String?
-  telephone         String?
-  email             String?
-  directeur_nom     String?
-  logo_url          String?
-  statut            StatutEcole   @default(EN_ATTENTE)
-  annee_scolaire    String?       // ex: "2024-2025"
-  cree_le           DateTime      @default(now())
-  modifie_le        DateTime      @updatedAt
+  id                    String        @id @default(uuid())
+  nom                   String
+  slug                  String        @unique   // ex: "saint-pierre" pour l'URL
+  schema_nom            String        @unique   // ex: "ecole_saint_pierre"
+  adresse               String?
+  ville                 String?
+  telephone             String?
+  email                 String?
+  directeur_nom         String?
+  logo_url              String?
+  statut                StatutEcole   @default(EN_ATTENTE)
+  annee_scolaire        String?       // ex: "2024-2025"
+  cree_le               DateTime      @default(now())
+  modifie_le            DateTime      @updatedAt
+
+  // Lien vers l'administrateur de l'école (fix B1)
+  admin_utilisateur_id  String?       @unique
+  adminUtilisateur      Utilisateur?  @relation("EcoleAdmin", fields: [admin_utilisateur_id], references: [id], onDelete: SetNull)
 
   // Relations
-  affectations_globales   AffectationGlobale[]
-  historique_migrations   HistoriqueMigration[]
-  abonnement              Abonnement?
+  affectations_globales     AffectationGlobale[]
+  historique_migrations     HistoriqueMigration[]
+  abonnement                Abonnement?
+  liaisons_parent_enfant    LiaisonParentEnfant[]
 
   @@schema("public")
   @@map("ecoles")
@@ -155,7 +168,8 @@ model Parent {
   modifie_le      DateTime    @updatedAt
 
   // Relations
-  utilisateur     Utilisateur       @relation(fields: [utilisateur_id], references: [id], onDelete: Cascade)
+  utilisateur           Utilisateur           @relation(fields: [utilisateur_id], references: [id], onDelete: Cascade)
+  liaisons_enfants      LiaisonParentEnfant[]
 
   @@schema("public")
   @@map("parents")
@@ -182,6 +196,55 @@ model AffectationGlobale {
   @@unique([professeur_id, ecole_id])
   @@schema("public")
   @@map("affectations_globales")
+}
+
+// ─────────────────────────────────────────────────────────
+// LIAISONS PARENT-ENFANT (cross-tenant)
+// Permet au parent d'accéder aux données de son enfant
+// dans le schéma tenant de l'école concernée
+// ─────────────────────────────────────────────────────────
+
+model LiaisonParentEnfant {
+  id           String    @id @default(uuid())
+  parent_id    String
+  ecole_id     String
+  schema_nom   String    // schéma tenant de l'école (ex: "ecole_saint_pierre")
+  eleve_id     String    // UUID de l'élève dans le schéma tenant
+  code_dossier String    @unique   // code unique fourni par l'admin pour valider la liaison
+  valide       Boolean   @default(false)
+  valide_le    DateTime?
+  cree_le      DateTime  @default(now())
+
+  parent       Parent    @relation(fields: [parent_id], references: [id], onDelete: Cascade)
+  ecole        Ecole     @relation(fields: [ecole_id], references: [id], onDelete: Cascade)
+
+  // Un parent ne peut être lié qu'une fois au même élève dans la même école
+  @@unique([parent_id, ecole_id, eleve_id])
+  @@schema("public")
+  @@map("liaisons_parent_enfant")
+}
+
+// ─────────────────────────────────────────────────────────
+// JOURNAL DES ACTIONS (audit log)
+// Traçabilité de toutes les actions sensibles
+// ─────────────────────────────────────────────────────────
+
+model JournalAction {
+  id             String       @id @default(uuid())
+  utilisateur_id String?
+  role           String?
+  action         String       // ex: CONNEXION_SUCCES, CONNEXION_ECHEC, CREATION_ECOLE
+  entite         String?      // ex: "ecole", "eleve", "utilisateur"
+  entite_id      String?
+  details        Json?
+  ip_adresse     String?
+  user_agent     String?
+  cree_le        DateTime     @default(now())
+
+  utilisateur    Utilisateur? @relation(fields: [utilisateur_id], references: [id], onDelete: SetNull)
+
+  @@schema("public")
+  @@map("journal_actions")
 }
 
 // ─────────────────────────────────────────────────────────

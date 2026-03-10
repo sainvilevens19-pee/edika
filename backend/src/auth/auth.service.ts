@@ -3,7 +3,8 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { v4 as uuid } from 'uuid';
 import { PrismaService } from '../commun/prisma/prisma.service';
-import { ConnexionDto, ChangerEcoleDto, RafraichirTokenDto } from './auth.dto';
+import { JournalService } from '../journal/journal.service';
+import { ConnexionDto, ChangerEcoleDto } from './auth.dto';
 
 @Injectable()
 export class AuthService {
@@ -11,9 +12,10 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly journal: JournalService,
   ) {}
 
-  async connexion(dto: ConnexionDto) {
+  async connexion(dto: ConnexionDto, ipAdresse?: string, userAgent?: string) {
     const utilisateur = await this.prisma.utilisateur.findUnique({
       where: { email: dto.email },
       include: {
@@ -29,11 +31,25 @@ export class AuthService {
     });
 
     if (!utilisateur || !utilisateur.actif) {
+      await this.journal.journaliser({
+        action: 'CONNEXION_ECHEC',
+        details: { email: dto.email, raison: 'Utilisateur introuvable ou inactif' },
+        ip_adresse: ipAdresse,
+        user_agent: userAgent,
+      });
       throw new UnauthorizedException('Identifiants incorrects');
     }
 
     const motDePasseValide = await bcrypt.compare(dto.mot_de_passe, utilisateur.mot_de_passe);
     if (!motDePasseValide) {
+      await this.journal.journaliser({
+        utilisateur_id: utilisateur.id,
+        role: utilisateur.role,
+        action: 'CONNEXION_ECHEC',
+        details: { raison: 'Mot de passe incorrect' },
+        ip_adresse: ipAdresse,
+        user_agent: userAgent,
+      });
       throw new UnauthorizedException('Identifiants incorrects');
     }
 
@@ -42,40 +58,101 @@ export class AuthService {
       data: { derniere_connexion: new Date() },
     });
 
+    // ── SUPER_ADMIN ────────────────────────────────────────────────────────────
     if (utilisateur.role === 'SUPER_ADMIN') {
-      return this.genererTokens(utilisateur, null, null);
+      const resultat = await this.genererTokens(utilisateur, null, null);
+      await this.journal.journaliser({
+        utilisateur_id: utilisateur.id,
+        role: utilisateur.role,
+        action: 'CONNEXION_SUCCES',
+        ip_adresse: ipAdresse,
+        user_agent: userAgent,
+      });
+      return resultat;
     }
 
+    // ── ADMIN_ECOLE ────────────────────────────────────────────────────────────
     if (utilisateur.role === 'ADMIN_ECOLE') {
       const ecole = await this.prisma.ecole.findFirst({
         where: { admin_utilisateur_id: utilisateur.id, statut: 'ACTIVE' },
       });
-      if (!ecole) throw new UnauthorizedException('Aucune école associée à ce compte');
-      return this.genererTokens(utilisateur, ecole.id, ecole.schema_nom);
+      if (!ecole) {
+        throw new UnauthorizedException('Aucune école active associée à ce compte');
+      }
+      const resultat = await this.genererTokens(utilisateur, ecole.id, ecole.schema_nom);
+      await this.journal.journaliser({
+        utilisateur_id: utilisateur.id,
+        role: utilisateur.role,
+        action: 'CONNEXION_SUCCES',
+        entite: 'ecole',
+        entite_id: ecole.id,
+        ip_adresse: ipAdresse,
+        user_agent: userAgent,
+      });
+      return resultat;
     }
 
+    // ── PROFESSEUR ─────────────────────────────────────────────────────────────
     if (utilisateur.role === 'PROFESSEUR') {
-      const ecoles = utilisateur.professeur?.affectations.map(a => ({
+      const ecoles = utilisateur.professeur?.affectations.map((a) => ({
         id: a.ecole.id,
         nom: a.ecole.nom,
         slug: a.ecole.slug,
         schema_nom: a.ecole.schema_nom,
       })) || [];
 
-      if (ecoles.length === 0) throw new UnauthorizedException("Vous n'êtes affilié à aucune école");
-      if (ecoles.length === 1) return this.genererTokens(utilisateur, ecoles[0].id, ecoles[0].schema_nom);
+      if (ecoles.length === 0) {
+        throw new UnauthorizedException("Vous n'êtes affilié à aucune école active");
+      }
 
+      if (ecoles.length === 1) {
+        const resultat = await this.genererTokens(utilisateur, ecoles[0].id, ecoles[0].schema_nom);
+        await this.journal.journaliser({
+          utilisateur_id: utilisateur.id,
+          role: utilisateur.role,
+          action: 'CONNEXION_SUCCES',
+          entite: 'ecole',
+          entite_id: ecoles[0].id,
+          ip_adresse: ipAdresse,
+          user_agent: userAgent,
+        });
+        return resultat;
+      }
+
+      // Plusieurs écoles → demander le choix
       if (!dto.ecole_id) {
         return { choix_ecole_requis: true, ecoles, message: 'Veuillez choisir une école' };
       }
 
-      const ecoleChoisie = ecoles.find(e => e.id === dto.ecole_id);
-      if (!ecoleChoisie) throw new UnauthorizedException("Vous n'êtes pas affilié à cette école");
-      return this.genererTokens(utilisateur, ecoleChoisie.id, ecoleChoisie.schema_nom);
+      const ecoleChoisie = ecoles.find((e) => e.id === dto.ecole_id);
+      if (!ecoleChoisie) {
+        throw new UnauthorizedException("Vous n'êtes pas affilié à cette école");
+      }
+
+      const resultat = await this.genererTokens(utilisateur, ecoleChoisie.id, ecoleChoisie.schema_nom);
+      await this.journal.journaliser({
+        utilisateur_id: utilisateur.id,
+        role: utilisateur.role,
+        action: 'CONNEXION_SUCCES',
+        entite: 'ecole',
+        entite_id: ecoleChoisie.id,
+        ip_adresse: ipAdresse,
+        user_agent: userAgent,
+      });
+      return resultat;
     }
 
+    // ── PARENT ─────────────────────────────────────────────────────────────────
     if (utilisateur.role === 'PARENT') {
-      return this.genererTokens(utilisateur, null, null);
+      const resultat = await this.genererTokens(utilisateur, null, null);
+      await this.journal.journaliser({
+        utilisateur_id: utilisateur.id,
+        role: utilisateur.role,
+        action: 'CONNEXION_SUCCES',
+        ip_adresse: ipAdresse,
+        user_agent: userAgent,
+      });
+      return resultat;
     }
 
     throw new UnauthorizedException('Rôle non reconnu');
@@ -97,51 +174,72 @@ export class AuthService {
     });
 
     if (!utilisateur) throw new NotFoundException('Utilisateur introuvable');
+
     const affectation = utilisateur.professeur?.affectations[0];
-    if (!affectation) throw new UnauthorizedException("Vous n'êtes pas affilié à cette école");
+    if (!affectation) {
+      throw new UnauthorizedException("Vous n'êtes pas affilié à cette école ou l'affectation est inactive");
+    }
+
     return this.genererTokens(utilisateur, affectation.ecole.id, affectation.ecole.schema_nom);
   }
 
-  async rafraichirToken(dto: RafraichirTokenDto) {
+  /**
+   * Rafraîchit les tokens depuis le refresh token (cookie httpOnly).
+   * Fix B2 : le refresh token est un UUID stocké en base, pas un JWT.
+   * Le contexte école est restauré depuis les champs ecole_id / schema_nom
+   * de la table TokenRafraichissement (ajoutés en Phase 1).
+   */
+  async rafraichirToken(refreshToken: string) {
     const tokenEnBase = await this.prisma.tokenRafraichissement.findUnique({
-      where: { token: dto.token_rafraichissement },
+      where: { token: refreshToken },
       include: { utilisateur: true },
     });
 
-    if (!tokenEnBase || tokenEnBase.revoque) throw new UnauthorizedException('Token invalide');
-    if (tokenEnBase.expire_le < new Date()) throw new UnauthorizedException('Token expiré');
-
-    let ancienContenu: any;
-    try {
-      ancienContenu = this.jwtService.verify(dto.token_rafraichissement, {
-        secret: process.env.SECRET_JWT,
-        ignoreExpiration: true,
-      });
-    } catch {
-      throw new UnauthorizedException('Token invalide');
+    if (!tokenEnBase || tokenEnBase.revoque) {
+      throw new UnauthorizedException('Token invalide ou révoqué');
     }
 
+    if (tokenEnBase.expire_le < new Date()) {
+      throw new UnauthorizedException('Token expiré');
+    }
+
+    // Révoquer l'ancien token (rotation de refresh token)
     await this.prisma.tokenRafraichissement.update({
       where: { id: tokenEnBase.id },
       data: { revoque: true },
     });
 
+    // Restaurer le contexte école depuis la base (fix B2 — plus de jwtService.verify sur UUID)
     return this.genererTokens(
       tokenEnBase.utilisateur,
-      ancienContenu.ecole_courant_id || null,
-      ancienContenu.schema_courant || null,
+      tokenEnBase.ecole_id ?? null,
+      tokenEnBase.schema_nom ?? null,
     );
   }
 
-  async deconnexion(tokenRafraichissement: string) {
-    await this.prisma.tokenRafraichissement.updateMany({
-      where: { token: tokenRafraichissement },
-      data: { revoque: true },
-    });
+  async deconnexion(refreshToken: string, utilisateurId?: string) {
+    if (refreshToken) {
+      await this.prisma.tokenRafraichissement.updateMany({
+        where: { token: refreshToken },
+        data: { revoque: true },
+      });
+    }
+
+    if (utilisateurId) {
+      await this.journal.journaliser({
+        utilisateur_id: utilisateurId,
+        action: 'DECONNEXION',
+      });
+    }
+
     return { message: 'Déconnexion réussie' };
   }
 
-  private async genererTokens(utilisateur: any, ecoleId: string | null, schemaNom: string | null) {
+  /**
+   * Génère un access token JWT (15 min) et un refresh token UUID (30 jours).
+   * Le contexte école est stocké dans les deux tokens pour restauration correcte.
+   */
+  async genererTokens(utilisateur: any, ecoleId: string | null, schemaNom: string | null) {
     const contenuToken = {
       utilisateur_id: utilisateur.id,
       role: utilisateur.role,
@@ -159,11 +257,14 @@ export class AuthService {
     const dateExpiration = new Date();
     dateExpiration.setDate(dateExpiration.getDate() + 30);
 
+    // Stocker ecole_id + schema_nom dans le token de rafraîchissement (fix B2)
     await this.prisma.tokenRafraichissement.create({
       data: {
         token: refreshToken,
         utilisateur_id: utilisateur.id,
         expire_le: dateExpiration,
+        ecole_id: ecoleId,
+        schema_nom: schemaNom,
       },
     });
 

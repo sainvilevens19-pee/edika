@@ -21,8 +21,5 @@ export class ChangerEcoleDto {
   ecole_id: string;
 }
 
-export class RafraichirTokenDto {
-  @IsString()
-  @IsNotEmpty({ message: 'Le token de rafraîchissement est obligatoire' })
-  token_rafraichissement: string;
-}
+// RafraichirTokenDto supprimé : le refresh token transite désormais
+// uniquement via le cookie httpOnly `refresh_token`, pas dans le corps de la requête.
