@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ecolesService } from '../services/api';
 
 export default function InscriptionEcolePage() {
   const [etape, setEtape] = useState(1);
@@ -29,20 +30,12 @@ export default function InscriptionEcolePage() {
     setChargement(true);
     setErreur('');
     try {
-      const reponse = await fetch('http://localhost:3000/api/v1/ecoles/inscription', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(donnees),
-      });
-      const data = await reponse.json();
-      if (!reponse.ok) {
-        setErreur(Array.isArray(data.message) ? data.message.join(', ') : data.message);
-        return;
-      }
+      await ecolesService.inscrireEcole(donnees);
       setSlugFinal(donnees.slug);
       setEtape(3);
-    } catch {
-      setErreur('Erreur de connexion au serveur');
+    } catch (err: any) {
+      const msg = err.response?.data?.message;
+      setErreur(Array.isArray(msg) ? msg.join(', ') : (msg || 'Erreur de connexion au serveur'));
     } finally {
       setChargement(false);
     }
